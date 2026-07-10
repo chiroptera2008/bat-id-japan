@@ -92,10 +92,12 @@ def load_model():
 
 # ─── 前処理関数 ──────────────────────────────────────────
 def wav_to_spectrogram_array(audio_bytes):
+    """WAVバイト列 → スペクトログラム配列（dB）"""
     data, sr = sf.read(io.BytesIO(audio_bytes))
     if data.ndim > 1:
         data = data[:, 0]
     data = data.astype(np.float32)
+
     f, t, Sxx = scipy_signal.spectrogram(
         data, fs=sr, nperseg=N_FFT, noverlap=N_FFT - HOP, window="hann"
     )
@@ -105,6 +107,7 @@ def wav_to_spectrogram_array(audio_bytes):
 
 
 def spectrogram_to_pil(f_kHz, t, Sxx_dB):
+    """スペクトログラム配列 → PIL Image（表示用）"""
     fig, ax = plt.subplots(figsize=(6, 3))
     ax.pcolormesh(t * 1000, f_kHz, Sxx_dB, shading="auto", cmap="inferno",
                   vmin=np.percentile(Sxx_dB, 5), vmax=np.percentile(Sxx_dB, 99))
@@ -120,6 +123,7 @@ def spectrogram_to_pil(f_kHz, t, Sxx_dB):
 
 
 def spectrogram_to_tensor(Sxx_dB):
+    """スペクトログラム配列 → モデル入力テンソル"""
     fig, ax = plt.subplots(figsize=(2.24, 2.24), dpi=100)
     ax.pcolormesh(np.arange(Sxx_dB.shape[1]), np.arange(Sxx_dB.shape[0]),
                   Sxx_dB, shading="auto", cmap="inferno",
@@ -131,6 +135,7 @@ def spectrogram_to_tensor(Sxx_dB):
     plt.close(fig)
     buf.seek(0)
     img = Image.open(buf).convert("RGB")
+
     tf = transforms.Compose([
         transforms.Resize((IMG_SIZE, IMG_SIZE)),
         transforms.ToTensor(),
@@ -140,9 +145,11 @@ def spectrogram_to_tensor(Sxx_dB):
 
 
 def predict(model, idx_to_class, tensor):
+    """推論 → Top-K 結果のリストを返す"""
     with torch.no_grad():
         logits = model(tensor)
         probs  = torch.softmax(logits, dim=1)[0]
+
     topk_probs, topk_idx = torch.topk(probs, TOP_K)
     results = []
     for prob, idx in zip(topk_probs.tolist(), topk_idx.tolist()):
@@ -161,12 +168,14 @@ st.set_page_config(
 st.title("🦇 日本産コウモリ 音声識別アプリ")
 st.caption("D1000X（Pettersson Elektronik AB）で録音した WAV ファイルを解析します")
 
+# モデル読み込み
 with st.spinner("モデルを読み込んでいます..."):
     model, idx_to_class = load_model()
 
 st.success(f"モデル準備完了（{len(idx_to_class)} 種対応）")
 st.divider()
 
+# ファイルアップロード
 uploaded = st.file_uploader("WAVファイルをアップロード", type=["wav", "WAV"])
 
 if uploaded is not None:
@@ -183,15 +192,19 @@ if uploaded is not None:
             st.error(f"解析エラー: {e}")
             st.stop()
 
+    # 録音情報
     col1, col2 = st.columns(2)
     col1.metric("サンプルレート", f"{sr / 1000:.0f} kHz")
     col2.metric("録音時間", f"{duration:.2f} 秒")
+
     st.divider()
 
-    top  = results[0]
-    sp   = top["species"]
+    # 最有力候補
+    top = results[0]
+    sp  = top["species"]
     conf = top["prob"]
 
+    conf_color = "green" if conf >= 0.7 else "orange" if conf >= 0.4 else "red"
     st.markdown(f"## 推定種：**{sp}**")
     info = SPECIES_INFO.get(sp, {})
     if info:
@@ -199,16 +212,22 @@ if uploaded is not None:
 
     st.progress(conf, text=f"確信度：{conf:.1%}")
 
+    # Top-K 結果バー
     st.subheader("上位 5 候補")
     for r in results:
-        st.progress(min(r["prob"], 1.0), text=f"{r['species']}  {r['prob']:.1%}")
+        bar_val = min(r["prob"], 1.0)
+        label   = f"{r['species']}  {r['prob']:.1%}"
+        st.progress(bar_val, text=label)
 
     st.divider()
+
+    # スペクトログラム表示
     st.subheader("スペクトログラム（10〜130 kHz）")
     st.image(spec_img, use_container_width=True)
 
+    # 注意書き
     st.info(
         "**ご注意** : このモデルは試験的なものです。"
         "確信度が低い場合（目安: 50% 未満）は、専門家による確認をお勧めします。"
-        f"  \n学習データ: 日本産 {len(idx_to_class)} 種・2,150 録音"
+        f"  \n学習データ: 日本産 {len(idx_to_class)} 種・2,057 録音（Ver.1.5）"
     )
