@@ -48,7 +48,6 @@ TOP_K      = 5
 # ─── 種の補足情報 ─────────────────────────────────────────
 SPECIES_INFO = {
     "アブラコウモリ":      {"latin": "Alionoctula abramus",           "en": "Japanese Pipistrelle"},
-    "ウサギコウモリ":      {"latin": "Plecotus auritus",              "en": "Brown Long-eared Bat"},
     "カグヤコウモリ":      {"latin": "Myotis longicaudatus",          "en": "Long-tailed Myotis"},
     "キクガシラコウモリ":  {"latin": "Rhinolophus nippon",            "en": "Greater Japanese Horseshoe Bat"},
     "キタクビワコウモリ":  {"latin": "Cnephaeus nilssonii",           "en": "Northern Serotine"},
@@ -229,5 +228,5 @@ if uploaded is not None:
     st.info(
         "**ご注意** : このモデルは試験的なものです。"
         "確信度が低い場合（目安: 50% 未満）は、専門家による確認をお勧めします。"
-        f"  \n学習データ: 日本産 {len(idx_to_class)} 種・2,057 録音（Ver.1.5）"
+        f"  \n学習データ: 日本産 {len(idx_to_class)} 種・2,057 録音（Ver.1.6）"
     )
