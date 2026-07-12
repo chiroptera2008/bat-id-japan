@@ -143,6 +143,10 @@ def spectrogram_to_tensor(Sxx_dB):
     return tf(img).unsqueeze(0)
 
 
+SPECIES_MERGE = {
+    "ウサギコウモリ": "ニホンウサギコウモリ",
+}
+
 def predict(model, idx_to_class, tensor):
     """推論 → Top-K 結果のリストを返す"""
     with torch.no_grad():
@@ -153,6 +157,7 @@ def predict(model, idx_to_class, tensor):
     results = []
     for prob, idx in zip(topk_probs.tolist(), topk_idx.tolist()):
         name = idx_to_class[str(idx)]
+        name = SPECIES_MERGE.get(name, name)
         results.append({"species": name, "prob": prob})
     return results
 
@@ -171,7 +176,7 @@ st.caption("D1000X（Pettersson Elektronik AB）で録音した WAV ファイル
 with st.spinner("モデルを読み込んでいます..."):
     model, idx_to_class = load_model()
 
-st.success(f"モデル準備完了（{len(idx_to_class)} 種対応）")
+st.success(f"モデル準備完了（21 種対応）")
 st.divider()
 
 # ファイルアップロード
@@ -228,5 +233,5 @@ if uploaded is not None:
     st.info(
         "**ご注意** : このモデルは試験的なものです。"
         "確信度が低い場合（目安: 50% 未満）は、専門家による確認をお勧めします。"
-        f"  \n学習データ: 日本産 {len(idx_to_class)} 種・2,057 録音（Ver.1.6）"
+        f"  \n学習データ: 日本産 21 種・2,057 録音（Ver.1.6）"
     )
