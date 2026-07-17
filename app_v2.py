@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 日本産コウモリ音声識別アプリ Ver.2.0
-スペクトログラム上で消しゴム編集 → 修正WAV保存 → 種判別
+スペクトログラムを見ながら時間・周波数範囲を指定して雑音を削除 → 種判別
 """
 import pathlib, io, json, warnings
 warnings.filterwarnings("ignore")
@@ -12,12 +12,11 @@ import torch
 import torch.nn as nn
 from torchvision import models, transforms
 from scipy import signal as scipy_signal
-from PIL import Image, ImageDraw
+from PIL import Image
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import streamlit as st
-from streamlit_drawable_canvas import st_canvas
 
 # ─── パスワード認証 ───────────────────────────────────────
 def check_password():
@@ -45,8 +44,6 @@ HOP        = N_FFT // 4
 FREQ_MIN   = 10    # kHz
 FREQ_MAX   = 130   # kHz
 TOP_K      = 5
-CANVAS_W   = 700   # スペクトログラム表示幅（px）
-CANVAS_H   = 350   # スペクトログラム表示高さ（px）
 
 # ─── 種の補足情報 ─────────────────────────────────────────
 SPECIES_INFO = {
@@ -98,7 +95,6 @@ def load_model():
 
 # ─── 音声処理関数 ─────────────────────────────────────────
 def wav_to_spectrogram(audio_data, sr):
-    """音声データ → スペクトログラム（周波数配列・時間配列・dB行列）"""
     f, t, Sxx = scipy_signal.spectrogram(
         audio_data, fs=sr, nperseg=N_FFT, noverlap=N_FFT - HOP, window="hann"
     )
@@ -107,12 +103,23 @@ def wav_to_spectrogram(audio_data, sr):
     return f[mask] / 1000, t, Sxx_dB[mask]
 
 
-def spectrogram_to_image(f_kHz, t, Sxx_dB, width=CANVAS_W, height=CANVAS_H):
-    """スペクトログラム → PIL Image（指定サイズ）"""
+def spectrogram_to_image(f_kHz, t, Sxx_dB, erase_regions=None, duration_sec=None):
+    """スペクトログラム → PIL Image（消去領域を赤枠でオーバーレイ）"""
     dpi = 100
-    fig, ax = plt.subplots(figsize=(width / dpi, height / dpi), dpi=dpi)
+    fig, ax = plt.subplots(figsize=(7, 3.5), dpi=dpi)
     ax.pcolormesh(t * 1000, f_kHz, Sxx_dB, shading="auto", cmap="inferno",
                   vmin=np.percentile(Sxx_dB, 5), vmax=np.percentile(Sxx_dB, 99))
+
+    # 消去領域を赤い半透明矩形で表示
+    if erase_regions:
+        import matplotlib.patches as mpatches
+        for (ts, te, fs, fe) in erase_regions:
+            rect = mpatches.Rectangle(
+                (ts * 1000, fs), (te - ts) * 1000, fe - fs,
+                linewidth=1.5, edgecolor="red", facecolor="red", alpha=0.25
+            )
+            ax.add_patch(rect)
+
     ax.set_xlabel("時間 (ms)", fontsize=8)
     ax.set_ylabel("周波数 (kHz)", fontsize=8)
     ax.tick_params(labelsize=7)
@@ -121,66 +128,28 @@ def spectrogram_to_image(f_kHz, t, Sxx_dB, width=CANVAS_W, height=CANVAS_H):
     plt.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
     plt.close(fig)
     buf.seek(0)
-    img = Image.open(buf).convert("RGBA")
-    img = img.resize((width, height), Image.LANCZOS)
-    return img
+    return Image.open(buf).copy()
 
 
-def apply_eraser_mask(audio_data, sr, mask_image, t_total_sec, f_min_kHz, f_max_kHz):
-    """
-    消しゴムで塗られたピクセル領域を音声データに反映する。
-    mask_image: RGBA PIL Image（消した部分が透明でない白ピクセル）
-    """
-    mask_arr = np.array(mask_image)
-    h, w = mask_arr.shape[:2]
-
-    # アルファチャンネルで「塗られた部分」を検出
-    painted = mask_arr[:, :, 3] > 10
-
-    if not painted.any():
-        return audio_data.copy()
-
+def apply_erase_regions(audio_data, sr, regions):
+    """指定された時間・周波数領域をゼロ化（FFTで該当帯域を消去）"""
     audio_out = audio_data.copy()
     n_samples = len(audio_data)
-
-    for px_x in range(w):
-        if not painted[:, px_x].any():
+    for (t_start, t_end, f_lo, f_hi) in regions:
+        s0 = max(0, int(t_start * sr))
+        s1 = min(n_samples, int(t_end * sr))
+        if s1 <= s0:
             continue
-
-        # X座標 → 時間（秒）
-        t_sec = px_x / w * t_total_sec
-        sample_idx = int(t_sec * sr)
-
-        # Y方向の塗られた範囲 → 周波数範囲
-        painted_rows = np.where(painted[:, px_x])[0]
-        if len(painted_rows) == 0:
-            continue
-        y_top    = painted_rows.min()
-        y_bottom = painted_rows.max()
-
-        # Y座標 → 周波数（kHz）　上が高周波・下が低周波
-        freq_top    = f_max_kHz - (y_top    / h) * (f_max_kHz - f_min_kHz)
-        freq_bottom = f_max_kHz - (y_bottom / h) * (f_max_kHz - f_min_kHz)
-        freq_lo = min(freq_top, freq_bottom)
-        freq_hi = max(freq_top, freq_bottom)
-
-        # その時刻のサンプル周辺で周波数フィルタリングして消去
-        half = N_FFT // 2
-        s0 = max(0, sample_idx - half)
-        s1 = min(n_samples, sample_idx + half)
         segment = audio_out[s0:s1].copy()
-
         freqs_fft = np.fft.rfftfreq(len(segment), d=1.0 / sr) / 1000
         spectrum  = np.fft.rfft(segment)
-        erase_mask = (freqs_fft >= freq_lo) & (freqs_fft <= freq_hi)
+        erase_mask = (freqs_fft >= f_lo) & (freqs_fft <= f_hi)
         spectrum[erase_mask] = 0
         audio_out[s0:s1] = np.fft.irfft(spectrum, n=len(segment))
-
     return audio_out
 
 
 def spectrogram_to_tensor_from_data(audio_data, sr):
-    """音声データ → モデル入力テンソル"""
     f_kHz, t, Sxx_dB = wav_to_spectrogram(audio_data, sr)
     fig, ax = plt.subplots(figsize=(2.24, 2.24), dpi=100)
     ax.pcolormesh(np.arange(Sxx_dB.shape[1]), np.arange(Sxx_dB.shape[0]),
@@ -215,7 +184,6 @@ def predict(model, idx_to_class, tensor):
 
 
 def audio_to_wav_bytes(audio_data, sr):
-    """numpy配列 → WAVバイト列"""
     buf = io.BytesIO()
     sf.write(buf, audio_data, sr, format="WAV")
     buf.seek(0)
@@ -230,7 +198,7 @@ st.set_page_config(
 )
 
 st.title("🦇 日本産コウモリ 音声識別アプリ Ver.2.0")
-st.caption("スペクトログラム上で雑音を消しゴム削除してから種判別できます")
+st.caption("スペクトログラムで雑音領域を範囲指定して削除してから種判別できます")
 
 with st.spinner("モデルを読み込んでいます..."):
     model, idx_to_class = load_model()
@@ -244,93 +212,103 @@ uploaded = st.file_uploader("WAVファイルを選択してください", type=[
 if uploaded is None:
     st.stop()
 
-original_name = pathlib.Path(uploaded.name).stem
-audio_bytes   = uploaded.read()
+original_name  = pathlib.Path(uploaded.name).stem
+audio_bytes    = uploaded.read()
 audio_data, sr = sf.read(io.BytesIO(audio_bytes))
 if audio_data.ndim > 1:
     audio_data = audio_data[:, 0]
-audio_data = audio_data.astype(np.float32)
+audio_data   = audio_data.astype(np.float32)
 duration_sec = len(audio_data) / sr
+duration_ms  = duration_sec * 1000
 
 st.audio(audio_bytes, format="audio/wav")
 col1, col2 = st.columns(2)
 col1.metric("サンプルレート", f"{sr / 1000:.0f} kHz")
-col2.metric("録音時間", f"{duration_sec:.3f} 秒")
+col2.metric("録音時間", f"{duration_ms:.1f} ms")
 
-# ─── STEP 2：スペクトログラム表示＋消しゴム編集 ─────────
+# ─── STEP 2：スペクトログラム表示＋消去領域指定 ──────────
 st.divider()
-st.subheader("Step 2　スペクトログラムで雑音を消す")
-st.markdown(
-    "🧹 **消しゴムモード**でスペクトログラム上の雑音部分をこすってください。"
-    "消した部分の音声が無音になります。"
-    "雑音がない場合はそのまま Step 3 へ進んでください。"
-)
+st.subheader("Step 2　消去する領域を指定する")
 
-# スペクトログラム画像を生成
+if "erase_regions" not in st.session_state:
+    st.session_state.erase_regions = []
+
+# スペクトログラム生成・表示（消去領域を赤枠でオーバーレイ）
 f_kHz, t_arr, Sxx_dB = wav_to_spectrogram(audio_data, sr)
-spec_img = spectrogram_to_image(f_kHz, t_arr, Sxx_dB, width=CANVAS_W, height=CANVAS_H)
+spec_img = spectrogram_to_image(f_kHz, t_arr, Sxx_dB,
+                                erase_regions=st.session_state.erase_regions,
+                                duration_sec=duration_sec)
+st.image(spec_img, use_container_width=True,
+         caption="スペクトログラム（10〜130 kHz）　赤枠＝消去予定領域")
 
-# 消しゴムサイズ選択
-eraser_size = st.select_slider(
-    "消しゴムのサイズ",
-    options=[10, 20, 30, 50, 80],
-    value=30,
-    format_func=lambda x: {10: "極小", 20: "小", 30: "中", 50: "大", 80: "極大"}[x],
-)
+st.markdown("**消去したい雑音の時間・周波数範囲を指定して「追加」してください。複数指定可能です。**")
 
-# 描画キャンバス（消しゴムのみ）
-canvas_result = st_canvas(
-    fill_color="rgba(255, 255, 255, 0.0)",
-    stroke_width=eraser_size,
-    stroke_color="#FFFFFF",
-    background_image=spec_img,
-    update_streamlit=True,
-    height=CANVAS_H,
-    width=CANVAS_W,
-    drawing_mode="freedraw",
-    key="eraser_canvas",
-)
+with st.form("add_region_form", clear_on_submit=True):
+    col_t, col_f = st.columns(2)
+    with col_t:
+        t_lo = st.number_input("開始時間 (ms)", min_value=0.0,
+                               max_value=float(duration_ms), value=0.0, step=1.0)
+        t_hi = st.number_input("終了時間 (ms)", min_value=0.0,
+                               max_value=float(duration_ms), value=float(duration_ms), step=1.0)
+    with col_f:
+        f_lo = st.number_input("最低周波数 (kHz)", min_value=float(FREQ_MIN),
+                               max_value=float(FREQ_MAX), value=float(FREQ_MIN), step=1.0)
+        f_hi = st.number_input("最高周波数 (kHz)", min_value=float(FREQ_MIN),
+                               max_value=float(FREQ_MAX), value=float(FREQ_MAX), step=1.0)
+    add_btn = st.form_submit_button("➕ この領域を消去リストに追加", type="primary")
+    if add_btn:
+        if t_hi <= t_lo:
+            st.error("終了時間は開始時間より大きくしてください。")
+        elif f_hi <= f_lo:
+            st.error("最高周波数は最低周波数より大きくしてください。")
+        else:
+            st.session_state.erase_regions.append(
+                (t_lo / 1000, t_hi / 1000, f_lo, f_hi)
+            )
+            st.rerun()
+
+# 消去リスト表示
+if st.session_state.erase_regions:
+    st.markdown("**消去予定の領域一覧（赤枠）:**")
+    for i, (ts, te, fs, fe) in enumerate(st.session_state.erase_regions, 1):
+        st.markdown(
+            f"　{i}. 時間 **{ts*1000:.0f} 〜 {te*1000:.0f} ms** "
+            f"/ 周波数 **{fs:.0f} 〜 {fe:.0f} kHz**"
+        )
+    if st.button("🗑　消去リストをすべてクリア"):
+        st.session_state.erase_regions = []
+        st.rerun()
+else:
+    st.info("消去領域が未設定です。雑音がない場合はそのまま Step 3 へ進んでください。")
 
 # ─── STEP 3：修正後の種判別 ──────────────────────────────
 st.divider()
 st.subheader("Step 3　種判別を実行する")
 
-has_drawing = (
-    canvas_result.image_data is not None
-    and canvas_result.image_data[:, :, 3].max() > 10
-)
-
-if has_drawing:
-    st.info("消しゴムで編集した内容が検出されました。修正後の音声で種判別します。")
+has_regions = len(st.session_state.erase_regions) > 0
+if has_regions:
+    st.info(f"{len(st.session_state.erase_regions)} 件の消去領域が設定されています。修正後の音声で種判別します。")
 else:
-    st.info("編集なし。元の音声でそのまま種判別します。")
+    st.info("消去領域なし。元の音声でそのまま種判別します。")
 
 if st.button("▶ 種判別を実行", type="primary"):
     with st.spinner("処理中..."):
-        # 消しゴムが使われていたら音声を修正
-        if has_drawing:
-            mask_img = Image.fromarray(canvas_result.image_data.astype(np.uint8), "RGBA")
-            audio_processed = apply_eraser_mask(
-                audio_data, sr, mask_img,
-                t_total_sec=duration_sec,
-                f_min_kHz=FREQ_MIN,
-                f_max_kHz=FREQ_MAX,
+        if has_regions:
+            audio_processed = apply_erase_regions(
+                audio_data, sr, st.session_state.erase_regions
             )
         else:
             audio_processed = audio_data.copy()
 
-        # 修正後スペクトログラムを表示
-        if has_drawing:
+        if has_regions:
             st.subheader("修正後のスペクトログラム")
             f2, t2, S2 = wav_to_spectrogram(audio_processed, sr)
-            img2 = spectrogram_to_image(f2, t2, S2, width=CANVAS_W, height=CANVAS_H)
+            img2 = spectrogram_to_image(f2, t2, S2)
             st.image(img2, use_container_width=True)
 
-        # 種判別
         tensor  = spectrogram_to_tensor_from_data(audio_processed, sr)
         results = predict(model, idx_to_class, tensor)
 
-    # 結果表示
     top  = results[0]
     sp   = top["species"]
     conf = top["prob"]
@@ -345,15 +323,10 @@ if st.button("▶ 種判別を実行", type="primary"):
     for r in results:
         st.progress(min(r["prob"], 1.0), text=f"{r['species']}  {r['prob']:.1%}")
 
-    st.divider()
-    st.subheader("スペクトログラム（元音声）")
-    st.image(spec_img, use_container_width=True)
-
-    # 修正WAVのダウンロード
-    if has_drawing:
+    if has_regions:
         st.divider()
         st.subheader("修正済み音声ファイルのダウンロード")
-        modified_wav = audio_to_wav_bytes(audio_processed, sr)
+        modified_wav  = audio_to_wav_bytes(audio_processed, sr)
         download_name = f"{original_name}修正.wav"
         st.download_button(
             label=f"💾 {download_name} をダウンロード",
@@ -362,6 +335,7 @@ if st.button("▶ 種判別を実行", type="primary"):
             mime="audio/wav",
         )
 
+    st.divider()
     st.info(
         "**ご注意** : このモデルは試験的なものです。"
         "確信度が低い場合（目安: 50% 未満）は、専門家による確認をお勧めします。"
