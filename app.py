@@ -177,7 +177,7 @@ st.caption("D1000X（Pettersson Elektronik AB）で録音した WAV ファイル
 with st.spinner("モデルを読み込んでいます..."):
     model, idx_to_class = load_model()
 
-st.success(f"モデル準備完了（22 種対応）")
+st.success(f"モデル準備完了（22 種対応・Ver.2.4）")
 st.divider()
 
 # ファイルアップロード
@@ -234,5 +234,5 @@ if uploaded is not None:
     st.info(
         "**ご注意** : このモデルは試験的なものです。"
         "確信度が低い場合（目安: 50% 未満）は、専門家による確認をお勧めします。"
-        f"  \n学習データ: 日本産 22 種・2,097 録音（Ver.1.7）"
+        f"  \n学習データ: 日本産 22 種・2,316 録音（Ver.2.4）"
     )
