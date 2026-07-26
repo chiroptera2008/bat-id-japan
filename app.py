@@ -36,14 +36,38 @@ check_password()
 
 # ─── パス設定 ────────────────────────────────────────────
 BASE_DIR   = pathlib.Path(__file__).parent
-MODEL_PATH = BASE_DIR / "models" / "best_model.pth"
-CLASS_JSON = BASE_DIR / "models" / "class_names.json"
+MODEL_DIR  = BASE_DIR / "models"
 IMG_SIZE   = 224
 N_FFT      = 2048
 HOP        = N_FFT // 4
 FREQ_MIN   = 10    # kHz
 FREQ_MAX   = 130   # kHz
 TOP_K      = 5
+
+# ─── 音響グループ定義（Ver.3.0 階層分類）───────────────────
+GROUPS = {
+    "R": ["キクガシラコウモリ", "コキクガシラコウモリ"],
+    "P": ["アブラコウモリ", "モリアブラコウモリ", "ユビナガコウモリ"],
+    "V": ["クビワコウモリ", "キタクビワコウモリ", "ヤマコウモリ", "コヤマコウモリ",
+          "ヒナコウモリ", "ヒメヒナコウモリ", "チチブコウモリ"],
+    "L": ["ニホンウサギコウモリ", "ウサギコウモリ", "テングコウモリ", "コテングコウモリ"],
+    "M": ["カグヤコウモリ", "ノレンコウモリ", "モモジロコウモリ",
+          "クロホオヒゲコウモリ", "ヒメホオヒゲコウモリ"],
+    "T": ["オヒキコウモリ"],
+}
+GROUP_LABELS = {
+    "R": "キクガシラ型（CF）",
+    "P": "アブラコウモリ型（FM）",
+    "V": "クビワ・ヤマ・ヒナ型（FM/CF）",
+    "L": "ウサギ・テング型（低強度FM）",
+    "M": "ホオヒゲ・ノレン型（Myotis型）",
+    "T": "オヒキ型（自由尾）",
+}
+SPECIES_TO_GROUP = {sp: g for g, sps in GROUPS.items() for sp in sps}
+
+SPECIES_MERGE = {
+    "ウサギコウモリ": "ニホンウサギコウモリ",
+}
 
 # ─── 種の補足情報 ─────────────────────────────────────────
 SPECIES_INFO = {
@@ -72,12 +96,7 @@ SPECIES_INFO = {
 }
 
 # ─── モデル読み込み（キャッシュ）────────────────────────
-@st.cache_resource
-def load_model():
-    with open(CLASS_JSON, encoding="utf-8") as f:
-        idx_to_class = json.load(f)
-    num_classes = len(idx_to_class)
-
+def _build_model(num_classes):
     m = models.mobilenet_v2(weights=None)
     m.classifier = nn.Sequential(
         nn.Dropout(p=0.4),
@@ -86,9 +105,31 @@ def load_model():
         nn.Dropout(p=0.3),
         nn.Linear(256, num_classes),
     )
-    m.load_state_dict(torch.load(str(MODEL_PATH), map_location="cpu"))
-    m.eval()
-    return m, idx_to_class
+    return m
+
+
+@st.cache_resource
+def load_model():
+    with open(MODEL_DIR / "group_classes.json", encoding="utf-8") as f:
+        group_classes = json.load(f)
+    group_model = _build_model(len(group_classes))
+    group_model.load_state_dict(torch.load(str(MODEL_DIR / "group_model.pth"), map_location="cpu"))
+    group_model.eval()
+
+    species_models = {}
+    species_classes = {}
+    for g in GROUPS:
+        sm_path = MODEL_DIR / f"species_model_{g}.pth"
+        if sm_path.exists():
+            with open(MODEL_DIR / f"species_classes_{g}.json", encoding="utf-8") as f:
+                species_classes[g] = json.load(f)
+            m = _build_model(len(species_classes[g]))
+            m.load_state_dict(torch.load(str(sm_path), map_location="cpu"))
+            m.eval()
+            species_models[g] = m
+
+    return group_model, group_classes, species_models, species_classes
+
 
 # ─── 前処理関数 ──────────────────────────────────────────
 def wav_to_spectrogram_array(audio_bytes):
@@ -144,23 +185,34 @@ def spectrogram_to_tensor(Sxx_dB):
     return tf(img).unsqueeze(0)
 
 
-SPECIES_MERGE = {
-    "ウサギコウモリ": "ニホンウサギコウモリ",
-}
-
-def predict(model, idx_to_class, tensor):
-    """推論 → Top-K 結果のリストを返す"""
+def predict(group_model, group_classes, species_models, species_classes, tensor):
+    """階層推論（グループ→種） Top-K 結果のリストを返す"""
     with torch.no_grad():
-        logits = model(tensor)
-        probs  = torch.softmax(logits, dim=1)[0]
+        g_logits = group_model(tensor)
+        g_probs  = torch.softmax(g_logits, dim=1)[0]
+    g_idx = g_probs.argmax().item()
+    pred_group = group_classes[str(g_idx)]
+    group_conf = g_probs[g_idx].item()
 
-    topk_probs, topk_idx = torch.topk(probs, TOP_K)
-    results = []
-    for prob, idx in zip(topk_probs.tolist(), topk_idx.tolist()):
-        name = idx_to_class[str(idx)]
+    if pred_group in species_models:
+        with torch.no_grad():
+            s_logits = species_models[pred_group](tensor)
+            s_probs  = torch.softmax(s_logits, dim=1)[0]
+        k = min(TOP_K, s_probs.shape[0])
+        topk_probs, topk_idx = torch.topk(s_probs, k)
+        results = []
+        for prob, idx in zip(topk_probs.tolist(), topk_idx.tolist()):
+            name = species_classes[pred_group][str(idx)]
+            name = SPECIES_MERGE.get(name, name)
+            # 種確信度はグループ確信度×グループ内確信度
+            results.append({"species": name, "prob": prob * group_conf})
+    else:
+        # グループに種が1つのみ（例: オヒキコウモリ）
+        name = GROUPS[pred_group][0]
         name = SPECIES_MERGE.get(name, name)
-        results.append({"species": name, "prob": prob})
-    return results
+        results = [{"species": name, "prob": group_conf}]
+
+    return results, pred_group, group_conf
 
 
 # ─── UI ─────────────────────────────────────────────────
@@ -175,9 +227,9 @@ st.caption("D1000X（Pettersson Elektronik AB）で録音した WAV ファイル
 
 # モデル読み込み
 with st.spinner("モデルを読み込んでいます..."):
-    model, idx_to_class = load_model()
+    group_model, group_classes, species_models, species_classes = load_model()
 
-st.success(f"モデル準備完了（22 種対応・Ver.2.4）")
+st.success(f"モデル準備完了（22 種対応・Ver.3.0 階層分類）")
 st.divider()
 
 # ファイルアップロード
@@ -192,7 +244,9 @@ if uploaded is not None:
             f_kHz, t, Sxx_dB, sr, duration = wav_to_spectrogram_array(audio_bytes)
             spec_img  = spectrogram_to_pil(f_kHz, t, Sxx_dB)
             tensor    = spectrogram_to_tensor(Sxx_dB)
-            results   = predict(model, idx_to_class, tensor)
+            results, pred_group, group_conf = predict(
+                group_model, group_classes, species_models, species_classes, tensor
+            )
         except Exception as e:
             st.error(f"解析エラー: {e}")
             st.stop()
@@ -203,6 +257,9 @@ if uploaded is not None:
     col2.metric("録音時間", f"{duration:.2f} 秒")
 
     st.divider()
+
+    # グループ（音響型）判定結果
+    st.caption(f"音響グループ判定: **{GROUP_LABELS.get(pred_group, pred_group)}**（確信度 {group_conf:.1%}）")
 
     # 最有力候補
     top = results[0]
@@ -217,8 +274,11 @@ if uploaded is not None:
 
     st.progress(conf, text=f"確信度：{conf:.1%}")
 
+    if conf < 0.4:
+        st.warning("確信度が低いため、種の識別は不確実です。近縁種を含めて専門家による確認を強く推奨します。")
+
     # Top-K 結果バー
-    st.subheader("上位 5 候補")
+    st.subheader("上位候補（同一音響グループ内）")
     for r in results:
         bar_val = min(r["prob"], 1.0)
         label   = f"{r['species']}  {r['prob']:.1%}"
@@ -234,5 +294,7 @@ if uploaded is not None:
     st.info(
         "**ご注意** : このモデルは試験的なものです。"
         "確信度が低い場合（目安: 50% 未満）は、専門家による確認をお勧めします。"
-        f"  \n学習データ: 日本産 22 種・2,316 録音（Ver.2.4）"
+        "  \n本バージョンは階層分類（音響グループ→種）を採用しており、"
+        "誤同定が生じる場合も近縁種の範囲に留まりやすい設計です。"
+        f"  \n学習データ: 日本産 22 種・2,316 録音（Ver.3.0）"
     )
