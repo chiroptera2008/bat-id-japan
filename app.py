@@ -229,7 +229,7 @@ st.caption("D1000X（Pettersson Elektronik AB）で録音した WAV ファイル
 with st.spinner("モデルを読み込んでいます..."):
     group_model, group_classes, species_models, species_classes = load_model()
 
-st.success(f"モデル準備完了（22 種対応・Ver.3.0 階層分類）")
+st.success(f"モデル準備完了（22 種対応・Ver.3.2 階層分類）")
 st.divider()
 
 # ファイルアップロード
@@ -296,5 +296,5 @@ if uploaded is not None:
         "確信度が低い場合（目安: 50% 未満）は、専門家による確認をお勧めします。"
         "  \n本バージョンは階層分類（音響グループ→種）を採用しており、"
         "誤同定が生じる場合も近縁種の範囲に留まりやすい設計です。"
-        f"  \n学習データ: 日本産 22 種・2,316 録音（Ver.3.0）"
+        f"  \n学習データ: 日本産 22 種・2,515 録音（Ver.3.2）"
     )
