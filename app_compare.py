@@ -64,11 +64,13 @@ VER32_DIR = _find_dir_containing("group_model.pth", [
 ])
 VER40_DIR = _find_dir_containing("perch_classifier.joblib", [
     MODEL_DIR / "ver40_perch",
+    BASE_DIR / "ver40_perch",
     MODEL_DIR,
     BASE_DIR.parent / "Ver4.0_perch" / "models",
 ])
 VER41_DIR = _find_dir_containing("birdnet_classifier.joblib", [
     MODEL_DIR / "ver41_birdnet",
+    BASE_DIR / "ver41_birdnet",
     MODEL_DIR,
     BASE_DIR.parent / "Ver4.1_birdnet" / "models",
 ])
