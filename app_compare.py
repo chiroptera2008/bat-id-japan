@@ -205,8 +205,9 @@ def spectrogram_to_pil(f_kHz, t, Sxx_dB):
     fig, ax = plt.subplots(figsize=(6, 3))
     ax.pcolormesh(t, f_kHz, Sxx_dB, shading="auto", cmap="inferno",
                   vmin=np.percentile(Sxx_dB, 5), vmax=np.percentile(Sxx_dB, 99))
-    ax.set_xlabel("時間 (秒)"); ax.set_ylabel("周波数 (kHz)")
-    ax.set_title("スペクトログラム（元の超音波録音）")
+    # Streamlit Cloudのサーバーには日本語フォントが無く文字化けするため、軸ラベルは英語表記にする
+    ax.set_xlabel("Time (s)"); ax.set_ylabel("Frequency (kHz)")
+    ax.set_title("Spectrogram (original ultrasonic recording)")
     plt.tight_layout()
     buf = io.BytesIO()
     plt.savefig(buf, format="png", dpi=100, bbox_inches="tight")
