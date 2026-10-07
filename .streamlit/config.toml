@@ -1,0 +1,6 @@
+[server]
+# 一括判定Web版（app_batch.py）でZIPをまとめてアップロードできるよう、上限を200MB→500MBに拡大
+maxUploadSize = 500
+
+[browser]
+gatherUsageStats = false
