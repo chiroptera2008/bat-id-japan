@@ -60,7 +60,14 @@ with st.expander("使い方と、Web版の制限"):
 - WAVを直接まとめて選んだ場合、ファイル名に `20200915_063713` のような日時が無いと、録音日時は「不明」になります。
 - 1回に処理できるのは **{MAX_FILES}件まで**、アップロード容量は合計500MBまでです（500kHz・3秒の録音で約3MB/件）。
   処理には1件あたり数秒かかります。処理中はこのページを閉じないでください。
-- それより多いデータは、ローカル配布版（フォルダを直接指定・中断再開可）をご利用ください。
+- それより多いデータは、**パソコン版（Windows）**をご利用ください。ご自分のパソコンで動かすもので、
+  フォルダを直接指定でき、件数の制限がなく、中断しても続きから再開できます。
+  1. [Python 3.13](https://www.python.org/downloads/) をインストール（「Add python.exe to PATH」にチェック）
+  2. [パソコン版をダウンロード（ZIP）](https://github.com/chiroptera2008/bat-id-japan/archive/refs/heads/main.zip) して展開
+  3. 展開したフォルダの `setup_windows.bat` をダブルクリック（初回のみ、10〜30分）
+  4. 以後は `start_batch_local.bat` をダブルクリックで起動
+
+  詳しくは [使い方_一括判定アプリ（GitHub）](https://github.com/chiroptera2008/bat-id-japan/blob/main/使い方_一括判定アプリ.md) をご覧ください。
 """
     )
 
