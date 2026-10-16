@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-日本産コウモリ音声識別アプリ Ver.4.0（実験版）
-Google Perch（Perch2ONNX、bioacoustics-model-zoo経由）の音響埋め込みを転移学習に
-用いた方式。本番app.py（Ver.3.2 階層分類CNN）とは独立した別アプリとして、
-比較検証のために公開する。
+日本産コウモリ音声識別アプリ Ver.4.4（実験版）
+Google Perch（Perch2ONNX）（bioacoustics-model-zoo経由）の音響埋め込みを転移学習に
+用いた方式。2026-10-16 の追加データで再学習し、「ノイズ（非コウモリ音）」の区分を加えた（22種＋ノイズ）。
 
 venv_perch環境で実行すること:
   streamlit run app_v4.py
@@ -26,7 +25,7 @@ import streamlit as st
 def check_password():
     if st.session_state.get("authenticated"):
         return True
-    st.title("🦇 日本産コウモリ 音声識別アプリ Ver.4.0（実験版）")
+    st.title("🦇 日本産コウモリ 音声識別アプリ Ver.4.4（実験版）")
     pw = st.text_input("パスワードを入力してください", type="password")
     if pw:
         if pw == st.secrets.get("APP_PASSWORD", ""):
@@ -40,15 +39,16 @@ check_password()
 
 # ─── パス設定 ────────────────────────────────────────────
 BASE_DIR    = pathlib.Path(__file__).parent
-MODEL_DIR   = BASE_DIR / "models"
+# GitHubリポジトリ直下（ver44_perch/）とローカル開発（Ver4.4_perch/models/）の両方に対応
+MODEL_DIR   = next((d for d in (BASE_DIR / "ver44_perch", BASE_DIR / "models")
+                    if (d / "perch_classifier.joblib").exists()), BASE_DIR / "ver44_perch")
 COVER_IMAGE = BASE_DIR / "cover_bat.jpg"
 N_FFT       = 2048
 TARGET_SR   = 44100   # ピッチシフト後のサンプルレート（Ghani et al. 2023方式）
 TOP_K       = 5
 
-# 場所ベース評価の正直な数値（README参照）
-LOCATION_BASED_ACC_MULTI = 0.496   # 複数地点17種
-SAMELOC_ACC_SINGLE = 0.952         # 単一地点5種（同一地点内のみ、参考値）
+# 場所ベース評価の正直な数値（Ver4.4_perch/reports/evaluation_v44_v45.txt）
+LOCATION_BASED_ACC_MULTI = 0.455   # 複数地点データがある18種
 
 SPECIES_INFO = {
     "アブラコウモリ":      {"latin": "Alionoctula abramus",           "en": "Japanese Pipistrelle"},
@@ -73,9 +73,11 @@ SPECIES_INFO = {
     "ヤマコウモリ":        {"latin": "Nyctalus aviator",              "en": "Bird-like Noctule"},
     "ユビナガコウモリ":    {"latin": "Miniopterus fuliginosus",       "en": "Asian Long-fingered Bat"},
     "オヒキコウモリ":      {"latin": "Tadarida insignis",             "en": "Japanese Free-tailed Bat"},
+    "ノイズ":              {"latin": "",                              "en": "Non-bat sound (insects, noise, vehicles, silence)"},
 }
 
-SINGLE_LOCATION_SPECIES = {"オヒキコウモリ", "キタクビワコウモリ", "コヤマコウモリ",
+# オヒキコウモリは 2026-10-16 の追加（熊本・鹿児島）で3地点になったため除外
+SINGLE_LOCATION_SPECIES = {"キタクビワコウモリ", "コヤマコウモリ",
                             "ドーベントンコウモリ", "ヒメヒナコウモリ"}
 
 # ─── モデル読み込み（キャッシュ） ───────────────────────────
@@ -121,9 +123,10 @@ def spectrogram_to_pil(f_kHz, t, Sxx_dB):
     fig, ax = plt.subplots(figsize=(6, 3))
     ax.pcolormesh(t, f_kHz, Sxx_dB, shading="auto", cmap="inferno",
                   vmin=np.percentile(Sxx_dB, 5), vmax=np.percentile(Sxx_dB, 99))
-    ax.set_xlabel("時間 (秒)")
-    ax.set_ylabel("周波数 (kHz)")
-    ax.set_title("スペクトログラム（元の超音波録音）")
+    # Streamlit Cloudには日本語フォントが無く文字化けするため、軸ラベルは英語表記にする
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Frequency (kHz)")
+    ax.set_title("Spectrogram (original ultrasonic recording)")
     plt.tight_layout()
     buf = io.BytesIO()
     plt.savefig(buf, format="png", dpi=100, bbox_inches="tight")
@@ -133,7 +136,7 @@ def spectrogram_to_pil(f_kHz, t, Sxx_dB):
 
 
 def predict(perch, clf, wav_path):
-    emb_df = perch.embed([wav_path])
+    emb_df = perch.embed([wav_path], progress_bar=False)
     embed_cols = [c for c in emb_df.columns]
     feature = emb_df[embed_cols].values.mean(axis=0).reshape(1, -1)
 
@@ -146,31 +149,30 @@ def predict(perch, clf, wav_path):
 
 # ─── UI ─────────────────────────────────────────────────
 st.set_page_config(
-    page_title="日本産コウモリ音声識別 Ver.4.0",
+    page_title="日本産コウモリ音声識別 Ver.4.4",
     page_icon="🦇",
     layout="centered",
 )
 
 if COVER_IMAGE.exists():
-    st.image(str(COVER_IMAGE), use_container_width=True)
+    st.image(str(COVER_IMAGE), width="stretch")
 
-st.title("🦇 日本産コウモリ 音声識別アプリ Ver.4.0（実験版）")
+st.title("🦇 日本産コウモリ 音声識別アプリ Ver.4.4（実験版）")
 st.caption("Google Perch（Perch2ONNX）の音響埋め込みを転移学習した実験版。"
-           "本番のVer.3.2（階層分類CNN）とは独立した別アプリです。")
+           "コウモリ22種に加えて「ノイズ（非コウモリ音）」を判定します。")
 
 st.warning(
-    "**このアプリはVer.3.2との比較検証用の実験版です。**  \n"
-    "場所ベースの正しい評価（未知の調査地での実力）では、複数地点データがある17種で"
-    f"**精度{LOCATION_BASED_ACC_MULTI:.1%}**でした。データが1地点のみの5種"
-    "（オヒキコウモリ・キタクビワコウモリ・コヤマコウモリ・ドーベントンコウモリ・"
-    f"ヒメヒナコウモリ）は同一地点内評価で精度{SAMELOC_ACC_SINGLE:.1%}ですが、"
-    "未知の場所での性能は未検証です。"
+    "**研究用の実験版です。**  \n"
+    "場所ベースの正しい評価（未知の調査地での実力）では、複数地点データがある18種で"
+    f"**精度{LOCATION_BASED_ACC_MULTI:.1%}**でした。データが1地点のみの4種"
+    "（キタクビワコウモリ・コヤマコウモリ・ドーベントンコウモリ・ヒメヒナコウモリ）は、"
+    "未知の場所での性能が未検証です。"
 )
 
 with st.spinner("モデルを読み込んでいます（初回は数十秒かかります）..."):
     perch, clf = load_models()
 
-st.success(f"モデル準備完了（22種対応・Ver.4.0 Perch転移学習・学習データ2,514録音）")
+st.success("モデル準備完了（22種＋ノイズ対応・Ver.4.4 Perch転移学習・コウモリ2,674録音＋ノイズ366サンプル）")
 st.divider()
 
 uploaded = st.file_uploader("WAVファイルをアップロード", type=["wav", "WAV"])
@@ -202,7 +204,9 @@ if uploaded is not None:
     st.markdown(f"## 推定種：**{sp}**")
     info = SPECIES_INFO.get(sp, {})
     if info:
-        st.markdown(f"*{info.get('latin', '')}* / {info.get('en', '')}")
+        st.markdown(f"*{info['latin']}* / {info['en']}" if info.get("latin") else info.get("en", ""))
+    if sp == "ノイズ":
+        st.info("コウモリ以外の音（虫・雑音・車など）または無音と判定しました。")
 
     st.progress(min(float(conf), 1.0), text=f"確信度：{conf:.1%}")
 
@@ -220,7 +224,7 @@ if uploaded is not None:
 
     st.divider()
     st.subheader("スペクトログラム（10〜130 kHz、元の超音波録音）")
-    st.image(spec_img, use_container_width=True)
+    st.image(spec_img, width="stretch")
 
     st.info(
         "**ご注意**：このアプリはGoogle Perch（鳥類音響埋め込みモデルPerch2.0のONNX版）を"
@@ -228,7 +232,8 @@ if uploaded is not None:
         "  \nコウモリの超音波コールは、サンプルレート変換によるピッチシフト"
         "（タイム・エクスパンションと同義）で可聴域相当に変換してからPerchに入力しています。"
         "  \n場所を考慮しない同一地点内評価では高精度ですが、真に未知の調査地での精度は"
-        f"約{LOCATION_BASED_ACC_MULTI:.0%}（複数地点データがある17種の場所ベース評価）に"
+        f"約{LOCATION_BASED_ACC_MULTI:.0%}（複数地点データがある18種の場所ベース評価）に"
         "留まります。研究・比較検証用としてご利用ください。"
-        "  \n学習データ: 日本産 22種・2,514録音（Ver.4.0、usableデータ全件）"
+        "  \n学習データ（Ver.4.4、2026-10-16 更新）: 日本産 22種・2,674録音と、"
+        "ノイズ（虫・雑音・川・バス・車の音と無音区間）366サンプル"
     )

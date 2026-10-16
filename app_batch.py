@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-日本産コウモリ音声 一括判定 Web版 Ver.4.3（Streamlit Cloud用）
+日本産コウモリ音声 一括判定 Web版 Ver.5.1（Streamlit Cloud用）
 複数のWAV、またはフォルダごと圧縮したZIPをアップロード → Perch・BirdNET（22種＋ノイズ）で判定 → Excelをダウンロード。
 処理本体はローカル版と共通の batch_core.py。大量（数百件以上）のデータはローカル配布版を使う。
 
-GitHubリポジトリ直下に app_batch.py / batch_core.py / ver43_batch/*.joblib を置く。
+GitHubリポジトリ直下に app_batch.py / batch_core.py / ver44_perch/ / ver45_birdnet/ を置く。
 """
 import datetime as dt
 import pathlib
@@ -21,7 +21,7 @@ MAX_FILES = 300   # Cloudの処理時間・メモリを考え、1回あたりの
 def check_password():
     if st.session_state.get("authenticated"):
         return True
-    st.title("日本産コウモリ音声 一括判定 Ver.4.3")
+    st.title("日本産コウモリ音声 一括判定 Ver.5.1")
     pw = st.text_input("パスワードを入力してください", type="password")
     if pw:
         if pw == st.secrets.get("APP_PASSWORD", ""):
@@ -32,7 +32,7 @@ def check_password():
     st.stop()
 
 
-st.set_page_config(page_title="コウモリ一括判定 Ver.4.3", page_icon="🦇", layout="wide")
+st.set_page_config(page_title="コウモリ一括判定 Ver.5.1", page_icon="🦇", layout="wide")
 check_password()
 
 
@@ -41,15 +41,15 @@ def get_models():
     return core.load_models()
 
 
-st.title("🦇 日本産コウモリ音声 一括判定 Ver.4.3")
+st.title("🦇 日本産コウモリ音声 一括判定 Ver.5.1")
 st.caption("複数のWAVファイル（またはフォルダごと圧縮したZIP）を、Perch・BirdNETの2方式で"
            "コウモリ22種＋ノイズに判定し、Excel一覧表にまとめます。")
 
 st.warning(
-    "**研究用の試作です。** 未知の調査地での種同定精度は Perch 49.6%・BirdNET 45.8%（複数地点17種）。"
+    "**研究用の試作です。** 未知の調査地での種同定精度は Perch 45.5%・BirdNET 41.4%（複数地点18種）。"
     "種名は「候補」として扱い、「要確認」の行は必ずスペクトログラムで確認してください。  \n"
-    "ノイズは虫・雑音・川の音（6調査地49録音）と無音区間のみで学習しており、"
-    "雨・風・鳥・人工音などは十分に学習していません。"
+    "ノイズは虫・雑音・川・バス・車の音（7調査地61録音）と無音区間のみで学習しており、"
+    "雨・風・鳥は学習しておらず、人工音（バス・車）もごく少量です。"
 )
 
 with st.expander("使い方と、Web版の制限"):
@@ -60,7 +60,7 @@ with st.expander("使い方と、Web版の制限"):
 - WAVを直接まとめて選んだ場合、ファイル名に `20200915_063713` のような日時が無いと、録音日時は「不明」になります。
 - 1回に処理できるのは **{MAX_FILES}件まで**、アップロード容量は合計500MBまでです（500kHz・3秒の録音で約3MB/件）。
   処理には1件あたり数秒かかります。処理中はこのページを閉じないでください。
-- それより多いデータは、**パソコン版（Windows）**をご利用ください。ご自分のパソコンで動かすもので、
+- それより多いデータは、**パソコン版**（Windows）をご利用ください。ご自分のパソコンで動かすもので、
   フォルダを直接指定でき、件数の制限がなく、中断しても続きから再開できます。
   1. [Python 3.13](https://www.python.org/downloads/) をインストール（「Add python.exe to PATH」にチェック）
   2. [パソコン版をダウンロード（ZIP）](https://github.com/chiroptera2008/bat-id-japan/archive/refs/heads/main.zip) して展開

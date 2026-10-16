@@ -3,7 +3,7 @@ cd /d %~dp0
 rem Python環境はパス長制限（260文字）を避けるため短い場所に作る。BATID_VENVで変更可
 if not defined BATID_VENV set BATID_VENV=%LOCALAPPDATA%\bat_id_japan\venv_batch
 echo ============================================================
-echo  日本産コウモリ音声 一括判定アプリ Ver.4.3  セットアップ
+echo  日本産コウモリ音声 一括判定アプリ Ver.5.1  セットアップ
 echo  （初回のみ。ダウンロード約1.5GB、10～30分かかります）
 echo ============================================================
 echo.

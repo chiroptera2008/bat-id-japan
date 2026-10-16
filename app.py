@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-日本産コウモリ音声識別アプリ
-WAVファイルをアップロードすると、種名と確信度を表示する
+日本産コウモリ音声識別アプリ Ver.3.3（階層分類CNN）
+WAVファイルをアップロードすると、種名と確信度を表示する。
+2026-10-16 の追加データで再学習し、音響グループに「N: ノイズ（非コウモリ音）」を追加した。
 """
 import pathlib, io, json, warnings
 warnings.filterwarnings("ignore")
@@ -36,7 +37,9 @@ check_password()
 
 # ─── パス設定 ────────────────────────────────────────────
 BASE_DIR   = pathlib.Path(__file__).parent
-MODEL_DIR  = BASE_DIR / "models"
+# GitHubリポジトリ直下（ver33_cnn/）とローカル開発（Ver3.3_cnn/models/）の両方に対応
+MODEL_DIR  = next((d for d in (BASE_DIR / "ver33_cnn", BASE_DIR / "models")
+                   if (d / "group_model.pth").exists()), BASE_DIR / "ver33_cnn")
 IMG_SIZE   = 224
 N_FFT      = 2048
 HOP        = N_FFT // 4
@@ -44,7 +47,7 @@ FREQ_MIN   = 10    # kHz
 FREQ_MAX   = 130   # kHz
 TOP_K      = 5
 
-# ─── 音響グループ定義（Ver.3.0 階層分類）───────────────────
+# ─── 音響グループ定義（Ver.3.3 階層分類、Ver3.3_cnn/scripts/species_groups_v33.py と同一）───
 GROUPS = {
     "R": ["キクガシラコウモリ", "コキクガシラコウモリ"],
     "P": ["アブラコウモリ", "モリアブラコウモリ", "ユビナガコウモリ"],
@@ -54,6 +57,7 @@ GROUPS = {
     "M": ["カグヤコウモリ", "ノレンコウモリ", "モモジロコウモリ",
           "クロホオヒゲコウモリ", "ヒメホオヒゲコウモリ", "ドーベントンコウモリ"],
     "T": ["オヒキコウモリ"],
+    "N": ["ノイズ"],
 }
 GROUP_LABELS = {
     "R": "キクガシラ型（CF）",
@@ -62,6 +66,7 @@ GROUP_LABELS = {
     "L": "ウサギ・テング型（低強度FM）",
     "M": "ホオヒゲ・ノレン型（Myotis型）",
     "T": "オヒキ型（自由尾）",
+    "N": "ノイズ（非コウモリ音）",
 }
 SPECIES_TO_GROUP = {sp: g for g, sps in GROUPS.items() for sp in sps}
 
@@ -93,6 +98,7 @@ SPECIES_INFO = {
     "ヤマコウモリ":        {"latin": "Nyctalus aviator",              "en": "Bird-like Noctule"},
     "ユビナガコウモリ":    {"latin": "Miniopterus fuliginosus",       "en": "Asian Long-fingered Bat"},
     "オヒキコウモリ":      {"latin": "Tadarida insignis",             "en": "Japanese Free-tailed Bat"},
+    "ノイズ":              {"latin": "",                              "en": "Non-bat sound (insects, noise, vehicles, silence)"},
 }
 
 # ─── モデル読み込み（キャッシュ）────────────────────────
@@ -152,9 +158,10 @@ def spectrogram_to_pil(f_kHz, t, Sxx_dB):
     fig, ax = plt.subplots(figsize=(6, 3))
     ax.pcolormesh(t * 1000, f_kHz, Sxx_dB, shading="auto", cmap="inferno",
                   vmin=np.percentile(Sxx_dB, 5), vmax=np.percentile(Sxx_dB, 99))
-    ax.set_xlabel("時間 (ms)")
-    ax.set_ylabel("周波数 (kHz)")
-    ax.set_title("スペクトログラム")
+    # Streamlit Cloudには日本語フォントが無く文字化けするため、軸ラベルは英語表記にする
+    ax.set_xlabel("Time (ms)")
+    ax.set_ylabel("Frequency (kHz)")
+    ax.set_title("Spectrogram")
     plt.tight_layout()
     buf = io.BytesIO()
     plt.savefig(buf, format="png", dpi=100, bbox_inches="tight")
@@ -207,7 +214,7 @@ def predict(group_model, group_classes, species_models, species_classes, tensor)
             # 種確信度はグループ確信度×グループ内確信度
             results.append({"species": name, "prob": prob * group_conf})
     else:
-        # グループに種が1つのみ（例: オヒキコウモリ）
+        # グループに区分が1つのみ（オヒキコウモリ、ノイズ）
         name = GROUPS[pred_group][0]
         name = SPECIES_MERGE.get(name, name)
         results = [{"species": name, "prob": group_conf}]
@@ -222,14 +229,14 @@ st.set_page_config(
     layout="centered",
 )
 
-st.title("🦇 日本産コウモリ 音声識別アプリ")
+st.title("🦇 日本産コウモリ 音声識別アプリ Ver.3.3")
 st.caption("D1000X（Pettersson Elektronik AB）で録音した WAV ファイルを解析します")
 
 # モデル読み込み
 with st.spinner("モデルを読み込んでいます..."):
     group_model, group_classes, species_models, species_classes = load_model()
 
-st.success(f"モデル準備完了（22 種対応・Ver.3.2 階層分類）")
+st.success("モデル準備完了（22 種＋ノイズ対応・Ver.3.3 階層分類）")
 st.divider()
 
 # ファイルアップロード
@@ -270,7 +277,9 @@ if uploaded is not None:
     st.markdown(f"## 推定種：**{sp}**")
     info = SPECIES_INFO.get(sp, {})
     if info:
-        st.markdown(f"*{info.get('latin', '')}* / {info.get('en', '')}")
+        st.markdown(f"*{info['latin']}* / {info['en']}" if info.get("latin") else info.get("en", ""))
+    if sp == "ノイズ":
+        st.info("コウモリ以外の音（虫・雑音・車など）または無音と判定しました。")
 
     st.progress(conf, text=f"確信度：{conf:.1%}")
 
@@ -288,7 +297,7 @@ if uploaded is not None:
 
     # スペクトログラム表示
     st.subheader("スペクトログラム（10〜130 kHz）")
-    st.image(spec_img, use_container_width=True)
+    st.image(spec_img, width="stretch")
 
     # 注意書き
     st.info(
@@ -296,5 +305,9 @@ if uploaded is not None:
         "確信度が低い場合（目安: 50% 未満）は、専門家による確認をお勧めします。"
         "  \n本バージョンは階層分類（音響グループ→種）を採用しており、"
         "誤同定が生じる場合も近縁種の範囲に留まりやすい設計です。"
-        f"  \n学習データ: 日本産 22 種・2,515 録音（Ver.3.2）"
+        "  \n評価は場所を考慮しないランダム分割のみで、未知の調査地での性能は未検証です。"
+        "  \nVer.3.2 と同じテスト画像での種レベル正解率は 68.8% で、Ver.3.2（73.1%）より低下しています"
+        "（ノイズ区分の追加と、学習のばらつきの影響と考えられますが、切り分けは未実施）。"
+        "  \n学習データ（Ver.3.3、2026-10-16 更新）: 日本産 22 種・3,101 録音と、"
+        "ノイズ（虫・雑音・川・バス・車の音と無音区間）366 サンプル"
     )

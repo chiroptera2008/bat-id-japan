@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Ver.4.3 一括分類の処理本体。自動録音機のフォルダを丸ごと処理し、Excel一覧表を作る。
+Ver.5.1 一括分類の処理本体。自動録音機のフォルダを丸ごと処理し、Excel一覧表を作る。
 
   ・Perch（Ver.4.0系）とBirdNET（Ver.4.1系）の両方で判定する
-  ・どちらも「コウモリ22種＋ノイズ（非コウモリ音）」の23クラス分類器（Ver.4.3で再学習）
+  ・どちらも「コウモリ22種＋ノイズ（非コウモリ音）」の23クラス分類器（Ver.4.4 Perch / Ver.4.5 BirdNET、2026-10-16 再学習）
   ・1ファイル処理するごとに途中経過CSVへ追記し、中断しても続きから再開できる
 
 コマンドラインから使う場合（venv_perch環境）:
@@ -31,9 +31,16 @@ import soundfile as sf
 from scipy import signal as scipy_signal
 
 BASE_DIR  = pathlib.Path(__file__).parent
-# ローカル（Ver4.3_batch/models/）とGitHubリポジトリ直下（ver43_batch/、Web版と共用）の両方に対応
-MODEL_DIR = next((d for d in (BASE_DIR / "models", BASE_DIR / "ver43_batch")
-                  if (d / "perch_classifier_noise.joblib").exists()), BASE_DIR / "models")
+
+def _find_dir(filename, candidates):
+    return next((d for d in candidates if (d / filename).exists()), candidates[0])
+
+
+# ローカル（Ver4.4_perch/models, Ver4.5_birdnet/models）とGitHubリポジトリ直下（ver44_perch/, ver45_birdnet/、
+# Web版・比較アプリV5.0と共用）の両方に対応
+PERCH_DIR = _find_dir("perch_classifier.joblib", [BASE_DIR / "ver44_perch", BASE_DIR.parent / "Ver4.4_perch" / "models"])
+BIRDNET_DIR = _find_dir("birdnet_classifier.joblib", [BASE_DIR / "ver45_birdnet", BASE_DIR.parent / "Ver4.5_birdnet" / "models"])
+MODEL_DIR = PERCH_DIR
 TARGET_SR = 44100        # ピッチシフト後（サンプルレートのラベル付け替え、Ver.4.0/4.1と同じ）
 NOISE = "ノイズ"
 TOP_K = 3
@@ -59,8 +66,8 @@ COLUMNS = ["No", "ファイル名", "フォルダ", "録音日時", "日時の�
 def load_models():
     import bioacoustics_model_zoo as bmz
     return {
-        "Perch":   (bmz.Perch2ONNX(headless=True), joblib.load(MODEL_DIR / "perch_classifier_noise.joblib")),
-        "BirdNET": (bmz.BirdNET(), joblib.load(MODEL_DIR / "birdnet_classifier_noise.joblib")),
+        "Perch":   (bmz.Perch2ONNX(headless=True), joblib.load(PERCH_DIR / "perch_classifier.joblib")),
+        "BirdNET": (bmz.BirdNET(), joblib.load(BIRDNET_DIR / "birdnet_classifier.joblib")),
     }
 
 
@@ -287,14 +294,14 @@ NUMERIC_COLS = ["No", "録音長(秒)", "サンプルレート(kHz)", "パルス
                 "Perch第3確信度", "BirdNET確信度", "BirdNET第2確信度", "BirdNET第3確信度"]
 
 EXPLANATION = [
-    ("このファイルについて", "日本産コウモリ音声識別 Ver.4.3（一括分類版）による自動判定の一覧表です。研究用の試作であり、最終判断は専門家が行ってください。"),
+    ("このファイルについて", "日本産コウモリ音声識別 Ver.5.1（一括分類版）による自動判定の一覧表です。研究用の試作であり、最終判断は専門家が行ってください。"),
     ("判定方式", "Perch（Google、Ver.4.0系）とBirdNET（Ver.4.1系）の音響埋め込みに線形分類器を載せた2方式。どちらもコウモリ22種＋「ノイズ（非コウモリ音）」の23クラスから選びます。"),
     ("総合判定", "2方式の第1候補が一致すればその名前、一致しなければ「要確認」。"),
     ("要確認・確認理由", "2方式の不一致、確信度40%未満、単一調査地データのみの種、低サンプルレート、長時間録音のいずれかに該当すると付きます。"),
     ("パルス検出比率", "15kHz以上で背景より15dB以上強いフレームの割合（判定とは独立の参考値）。0に近いのにコウモリと判定された行は要注意。"),
     ("録音日時", "ファイル名に「20200915_063713」のような日時があればそこから、無ければファイル更新日時で代用（日時の取得元列を参照）。"),
-    ("精度の目安（Ver.4.0/4.1、未知の調査地）", "複数地点データがある17種で Perch 49.6% / BirdNET 45.8%。種名は「候補」として扱ってください。"),
-    ("ノイズクラスの限界", "ノイズの学習データは虫・雑音・川の音49録音（6調査地）と既存録音の無音区間のみ。雨・風・鳥・人工音などは十分に学習していません。"),
+    ("精度の目安（Ver.4.4/4.5、未知の調査地）", "複数地点データがある18種で Perch 45.5% / BirdNET 41.4%（場所ベース評価、分割の仕方で数ポイント変動）。種名は「候補」として扱ってください。"),
+    ("ノイズクラスの限界", "ノイズの学習データは虫・雑音・川・バス・車の音61録音（7調査地）と既存録音の無音区間のみ。雨・風・鳥や、少量しかない人工音は誤判定することがあります。"),
     ("単一調査地の5種", "オヒキ・キタクビワ・コヤマ・ドーベントン・ヒメヒナは1地点のデータのみで学習しており、他地点での性能は未検証です。"),
 ]
 
