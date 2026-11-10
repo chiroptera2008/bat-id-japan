@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Ver.5.1 一括分類の処理本体。自動録音機のフォルダを丸ごと処理し、Excel一覧表を作る。
+Ver.5.3 一括分類の処理本体。自動録音機のフォルダを丸ごと処理し、Excel一覧表を作る。
 
   ・Perch（Ver.4.0系）とBirdNET（Ver.4.1系）の両方で判定する
-  ・どちらも「コウモリ22種＋ノイズ（非コウモリ音）」の23クラス分類器（Ver.4.4 Perch / Ver.4.5 BirdNET、2026-10-16 再学習）
+  ・どちらも「コウモリ22種＋ノイズ（非コウモリ音）」の23クラス分類器（Ver.4.6 Perch / Ver.4.7 BirdNET、2026-11-09 改訂）
+  ・判定前に録音のサンプルレートを384kHzに揃えてからピッチシフトする（2026-11-09 改訂、学習時と同じ前処理）
   ・1ファイル処理するごとに途中経過CSVへ追記し、中断しても続きから再開できる
 
 コマンドラインから使う場合（venv_perch環境）:
@@ -13,6 +14,7 @@ Ver.5.1 一括分類の処理本体。自動録音機のフォルダを丸ごと
 import csv
 import datetime as dt
 import io
+import math
 import os
 import pathlib
 import re
@@ -29,6 +31,7 @@ import numpy as np
 import pandas as pd
 import soundfile as sf
 from scipy import signal as scipy_signal
+from scipy.signal import resample_poly
 
 BASE_DIR  = pathlib.Path(__file__).parent
 
@@ -36,12 +39,13 @@ def _find_dir(filename, candidates):
     return next((d for d in candidates if (d / filename).exists()), candidates[0])
 
 
-# ローカル（Ver4.4_perch/models, Ver4.5_birdnet/models）とGitHubリポジトリ直下（ver44_perch/, ver45_birdnet/、
-# Web版・比較アプリV5.0と共用）の両方に対応
-PERCH_DIR = _find_dir("perch_classifier.joblib", [BASE_DIR / "ver44_perch", BASE_DIR.parent / "Ver4.4_perch" / "models"])
-BIRDNET_DIR = _find_dir("birdnet_classifier.joblib", [BASE_DIR / "ver45_birdnet", BASE_DIR.parent / "Ver4.5_birdnet" / "models"])
+# ローカル（Ver4.4_perch/models_sr384_ex24, Ver4.5_birdnet/models_sr384_ex24）とGitHubリポジトリ直下（ver46_perch/, ver47_birdnet/、
+# Web版・比較アプリV5.2と共用）の両方に対応
+PERCH_DIR = _find_dir("perch_classifier.joblib", [BASE_DIR / "ver46_perch", BASE_DIR.parent / "Ver4.4_perch" / "models_sr384_ex24"])
+BIRDNET_DIR = _find_dir("birdnet_classifier.joblib", [BASE_DIR / "ver47_birdnet", BASE_DIR.parent / "Ver4.5_birdnet" / "models_sr384_ex24"])
 MODEL_DIR = PERCH_DIR
 TARGET_SR = 44100        # ピッチシフト後（サンプルレートのラベル付け替え、Ver.4.0/4.1と同じ）
+COMMON_SR = 384000       # ピッチシフト前にこのサンプルレートへ揃える（2026-11-09 改訂、学習時と同じ前処理）
 NOISE = "ノイズ"
 TOP_K = 3
 BATCH_FILES = 16         # 埋め込みモデルにまとめて渡すファイル数
@@ -102,6 +106,15 @@ def pulse_ratio(data, sr, n_fft=2048, freq_min_hz=15000, threshold_db=15.0):
                                        window="hann", scaling="spectrum")
     fm = (10.0 * np.log10(S + 1e-10))[f >= freq_min_hz].max(axis=0)
     return float(np.mean(fm > np.percentile(fm, 10) + threshold_db))
+
+
+def to_common_sr(data, sr):
+    """録音機ごとのサンプルレート（256〜500kHz）の違いで、ピッチシフト後のパルスの高さが
+    変わらないよう 384kHz に揃える。LOW_SR_HZ 未満は時間伸長済みの可能性があるため揃えない（学習データからも除外）"""
+    if sr == COMMON_SR or sr < LOW_SR_HZ:
+        return data
+    g = math.gcd(COMMON_SR, int(sr))
+    return resample_poly(data, COMMON_SR // g, int(sr) // g).astype(np.float32)
 
 
 # ─── 判定 ─────────────────────────────────────────────
@@ -212,7 +225,7 @@ def process_batch(models, paths, folder, start_no, tmpdir, trust_mtime=True):
             pr = pulse_ratio(data, sr)
             row["パルス検出比率"] = "" if np.isnan(pr) else round(pr, 4)
             tmp = str(tmpdir / f"{start_no + k}.wav")
-            sf.write(tmp, data, TARGET_SR)
+            sf.write(tmp, to_common_sr(data, sr), TARGET_SR)
             shifted[tmp] = (row, sr, len(data) / sr)
         except Exception as e:
             row.update({"総合判定": "読込エラー", "要確認": "要確認", "エラー": str(e)})
@@ -294,13 +307,13 @@ NUMERIC_COLS = ["No", "録音長(秒)", "サンプルレート(kHz)", "パルス
                 "Perch第3確信度", "BirdNET確信度", "BirdNET第2確信度", "BirdNET第3確信度"]
 
 EXPLANATION = [
-    ("このファイルについて", "日本産コウモリ音声識別 Ver.5.1（一括分類版）による自動判定の一覧表です。研究用の試作であり、最終判断は専門家が行ってください。"),
-    ("判定方式", "Perch（Google、Ver.4.0系）とBirdNET（Ver.4.1系）の音響埋め込みに線形分類器を載せた2方式。どちらもコウモリ22種＋「ノイズ（非コウモリ音）」の23クラスから選びます。"),
+    ("このファイルについて", "日本産コウモリ音声識別 Ver.5.3（一括分類版）による自動判定の一覧表です。研究用の試作であり、最終判断は専門家が行ってください。"),
+    ("判定方式", "Perch（Google、Ver.4.0系）とBirdNET（Ver.4.1系）の音響埋め込みに線形分類器を載せた2方式。どちらもコウモリ22種＋「ノイズ（非コウモリ音）」の23クラスから選びます。録音のサンプルレートを384kHzに揃えてから一律約8.7倍のピッチシフトで可聴域相当に変換して入力します（2026-11-09 改訂）。"),
     ("総合判定", "2方式の第1候補が一致すればその名前、一致しなければ「要確認」。"),
     ("要確認・確認理由", "2方式の不一致、確信度40%未満、単一調査地データのみの種、低サンプルレート、長時間録音のいずれかに該当すると付きます。"),
     ("パルス検出比率", "15kHz以上で背景より15dB以上強いフレームの割合（判定とは独立の参考値）。0に近いのにコウモリと判定された行は要注意。"),
     ("録音日時", "ファイル名に「20200915_063713」のような日時があればそこから、無ければファイル更新日時で代用（日時の取得元列を参照）。"),
-    ("精度の目安（Ver.4.4/4.5、未知の調査地）", "複数地点データがある18種で Perch 45.5% / BirdNET 41.4%（場所ベース評価、分割の仕方で数ポイント変動）。種名は「候補」として扱ってください。"),
+    ("精度の目安（Ver.4.6/4.7、未知の調査地）", "複数地点データがある18種で Perch 66.1% / BirdNET 57.9%（場所ベース評価、分割の仕方で数ポイント変動）。種による差が大きく、ヒナコウモリ・テングコウモリは2割前後です。種名は「候補」として扱ってください。"),
     ("ノイズクラスの限界", "ノイズの学習データは虫・雑音・川・バス・車の音61録音（7調査地）と既存録音の無音区間のみ。雨・風・鳥や、少量しかない人工音は誤判定することがあります。"),
     ("単一調査地の5種", "オヒキ・キタクビワ・コヤマ・ドーベントン・ヒメヒナは1地点のデータのみで学習しており、他地点での性能は未検証です。"),
 ]

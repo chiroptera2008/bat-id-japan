@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-日本産コウモリ音声 一括分類アプリ Ver.5.1（ローカル実行専用）
+日本産コウモリ音声 一括分類アプリ Ver.5.3（ローカル実行専用）
 自動録音機のフォルダを指定すると、全WAVを Perch・BirdNET（22種＋ノイズ）で判定し、Excel一覧表を作る。
 
 起動: start_batch_app.bat をダブルクリック（または venv_perch で streamlit run batch_app.py）
@@ -11,11 +11,12 @@ import streamlit as st
 
 import batch_core as core
 
-st.set_page_config(page_title="コウモリ一括分類 Ver.5.1", page_icon="🦇", layout="wide")
-st.title("🦇 日本産コウモリ音声 一括分類 Ver.5.1")
+st.set_page_config(page_title="コウモリ一括分類 Ver.5.3", page_icon="🦇", layout="wide")
+st.title("🦇 日本産コウモリ音声 一括分類 Ver.5.3")
 st.caption("自動録音機のフォルダを丸ごと判定し、Excel一覧表を作成します（Perch・BirdNETの2方式、22種＋ノイズ）。")
 st.warning(
-    "研究用の試作です。未知の調査地での種同定精度は Perch 45.5%・BirdNET 41.4%（複数地点18種）。"
+    "研究用の試作です。未知の調査地での種同定精度は Perch 66.1%・BirdNET 57.9%（複数地点18種、2026-11-09 改訂）。"
+    "ヒナコウモリ・テングコウモリは2割前後と低い精度です。"
     "種名は「候補」として扱い、「要確認」の行は必ずスペクトログラムで確認してください。  \n"
     "ノイズクラスは虫・雑音・川・バス・車の音（7調査地61録音）と無音区間のみで学習しており、"
     "雨・風・鳥は学習しておらず、人工音（バス・車）もごく少量です。"

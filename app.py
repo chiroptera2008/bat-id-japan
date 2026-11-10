@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-日本産コウモリ音声識別アプリ Ver.3.3（階層分類CNN）
+日本産コウモリ音声識別アプリ Ver.3.4（階層分類CNN）
 WAVファイルをアップロードすると、種名と確信度を表示する。
 2026-10-16 の追加データで再学習し、音響グループに「N: ノイズ（非コウモリ音）」を追加した。
+2026-11-10：他アプリ（Ver.4.6/4.7/5.2/5.3）と版番号を揃えるため Ver.3.3 → Ver.3.4 とした。モデル・前処理は Ver.3.3 と同じ。
 """
 import pathlib, io, json, warnings
 warnings.filterwarnings("ignore")
@@ -47,7 +48,7 @@ FREQ_MIN   = 10    # kHz
 FREQ_MAX   = 130   # kHz
 TOP_K      = 5
 
-# ─── 音響グループ定義（Ver.3.3 階層分類、Ver3.3_cnn/scripts/species_groups_v33.py と同一）───
+# ─── 音響グループ定義（Ver.3.4 階層分類、Ver3.3_cnn/scripts/species_groups_v33.py と同一）───
 GROUPS = {
     "R": ["キクガシラコウモリ", "コキクガシラコウモリ"],
     "P": ["アブラコウモリ", "モリアブラコウモリ", "ユビナガコウモリ"],
@@ -229,14 +230,15 @@ st.set_page_config(
     layout="centered",
 )
 
-st.title("🦇 日本産コウモリ 音声識別アプリ Ver.3.3")
-st.caption("D1000X（Pettersson Elektronik AB）で録音した WAV ファイルを解析します")
+st.title("🦇 日本産コウモリ 音声識別アプリ Ver.3.4")
+st.caption("D1000X（Pettersson Elektronik AB）で録音した WAV ファイルを解析します  \n"
+           "Ver.3.4 は、他のアプリと版番号を揃えるために番号だけを変えたもので、モデルと判定結果は Ver.3.3 と同じです（2026-11-10）")
 
 # モデル読み込み
 with st.spinner("モデルを読み込んでいます..."):
     group_model, group_classes, species_models, species_classes = load_model()
 
-st.success("モデル準備完了（22 種＋ノイズ対応・Ver.3.3 階層分類）")
+st.success("モデル準備完了（22 種＋ノイズ対応・Ver.3.4 階層分類）")
 st.divider()
 
 # ファイルアップロード
@@ -308,6 +310,6 @@ if uploaded is not None:
         "  \n評価は場所を考慮しないランダム分割のみで、未知の調査地での性能は未検証です。"
         "  \nVer.3.2 と同じテスト画像での種レベル正解率は 68.8% で、Ver.3.2（73.1%）より低下しています"
         "（ノイズ区分の追加と、学習のばらつきの影響と考えられますが、切り分けは未実施）。"
-        "  \n学習データ（Ver.3.3、2026-10-16 更新）: 日本産 22 種・3,101 録音と、"
+        "  \n学習データ（Ver.3.4＝Ver.3.3 と同じモデル、2026-10-16 更新）: 日本産 22 種・3,101 録音と、"
         "ノイズ（虫・雑音・川・バス・車の音と無音区間）366 サンプル"
     )

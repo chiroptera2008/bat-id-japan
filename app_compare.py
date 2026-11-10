@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-日本産コウモリ音声識別アプリ Ver.5.0（3方式比較版）
-Ver.3.3（階層分類CNN）・Ver.4.4（Google Perch転移学習）・Ver.4.5（BirdNET転移学習）の
+日本産コウモリ音声識別アプリ Ver.5.2（3方式比較版）
+Ver.3.4（階層分類CNN）・Ver.4.6（Google Perch転移学習）・Ver.4.7（BirdNET転移学習）の
 3方式を、同一のアップロード音声に対して同時に実行し、横並びで比較表示する。
 3方式とも 2026-10-16 の追加データで再学習し、「ノイズ（非コウモリ音）」の区分を持つ（22種＋ノイズ）。
+2026-11-09 改訂：Ver.4.6/4.7 は録音のサンプルレートを 384kHz に揃えてからピッチシフトする前処理に変更し、
+分類器を作り直した（Ver4.4_perch/scripts/train_final_sr384_ex.py の ex24。ラベルが不確かなノレン1件と高知県津野町のテング全23件は学習から除外）。
+2026-11-10：版番号を Ver.5.0→5.2、Ver.3.3→3.4（番号のみ）、Ver.4.4→4.6、Ver.4.5→4.7 に変更し、分類器の置き場所を ver46_perch/ ver47_birdnet/ にした。
 
 venv_perch環境で実行すること:
   streamlit run app_compare.py
 """
-import pathlib, io, json, warnings, tempfile
+import pathlib, io, json, math, warnings, tempfile
 warnings.filterwarnings("ignore")
 
 import numpy as np
@@ -18,6 +21,7 @@ import torch
 import torch.nn as nn
 from torchvision import models, transforms
 from scipy import signal as scipy_signal
+from scipy.signal import resample_poly
 from PIL import Image
 import matplotlib
 matplotlib.use("Agg")
@@ -28,7 +32,7 @@ import streamlit as st
 def check_password():
     if st.session_state.get("authenticated"):
         return True
-    st.title("🦇 日本産コウモリ音声識別 3方式比較アプリ Ver.5.0")
+    st.title("🦇 日本産コウモリ音声識別 3方式比較アプリ Ver.5.2")
     pw = st.text_input("パスワードを入力してください", type="password")
     if pw:
         if pw == st.secrets.get("APP_PASSWORD", ""):
@@ -57,18 +61,18 @@ def _find_dir_containing(filename, candidates):
     return candidates[0]
 
 
-# GitHubリポジトリ直下（ver33_cnn/ ver44_perch/ ver45_birdnet/）とローカル開発（Ver3.3_cnn/models 等）の両方に対応
+# GitHubリポジトリ直下（ver33_cnn/ ver46_perch/ ver47_birdnet/）とローカル開発（Ver3.3_cnn/models 等）の両方に対応
 VER32_DIR = _find_dir_containing("group_model.pth", [
     BASE_DIR / "ver33_cnn",
     BASE_DIR.parent / "Ver3.3_cnn" / "models",
 ])
 VER40_DIR = _find_dir_containing("perch_classifier.joblib", [
-    BASE_DIR / "ver44_perch",
-    BASE_DIR.parent / "Ver4.4_perch" / "models",
+    BASE_DIR / "ver46_perch",
+    BASE_DIR.parent / "Ver4.4_perch" / "models_sr384_ex24",
 ])
 VER41_DIR = _find_dir_containing("birdnet_classifier.joblib", [
-    BASE_DIR / "ver45_birdnet",
-    BASE_DIR.parent / "Ver4.5_birdnet" / "models",
+    BASE_DIR / "ver47_birdnet",
+    BASE_DIR.parent / "Ver4.5_birdnet" / "models_sr384_ex24",
 ])
 
 IMG_SIZE   = 224
@@ -78,16 +82,18 @@ FREQ_MIN   = 10
 FREQ_MAX   = 130
 TOP_K      = 5
 TARGET_SR  = 44100   # ピッチシフト後（Perch/BirdNET共通、タイム・エクスパンション方式）
+COMMON_SR  = 384000  # ピッチシフト前にこのサンプルレートへ揃える（学習時と同じ前処理）
+MIN_SR     = 192000  # これ未満は時間伸長済みの可能性があるため揃えない（学習データからも除外）
 
-# 場所ベース評価の実測値（Ver4.4_perch/reports/evaluation_v44_v45.txt、複数地点18種、マイクロ平均）
+# 場所ベース評価の実測値（Ver4.4_perch/reports/reeval_excluded.txt の X3・除外して学習、複数地点18種、マイクロ平均）
 ACC = {
-    "ver33":   {"multi": None},    # Ver.3.3はV3.2と同じく場所ベース未評価（既知の限界）
-    "ver44":   {"multi": 0.455},
-    "ver45":   {"multi": 0.414},
+    "ver33":   {"multi": None},    # Ver.3.4はV3.2と同じく場所ベース未評価（既知の限界）
+    "ver44":   {"multi": 0.661},
+    "ver45":   {"multi": 0.579},
 }
 NOISE = "ノイズ"
 
-# ─── 音響グループ定義（Ver.3.3 階層分類、Ver3.3_cnn/scripts/species_groups_v33.py と同一） ───
+# ─── 音響グループ定義（Ver.3.4 階層分類、Ver3.3_cnn/scripts/species_groups_v33.py と同一） ───
 GROUPS = {
     "R": ["キクガシラコウモリ", "コキクガシラコウモリ"],
     "P": ["アブラコウモリ", "モリアブラコウモリ", "ユビナガコウモリ"],
@@ -217,10 +223,19 @@ def spectrogram_to_pil(f_kHz, t, Sxx_dB):
     return Image.open(buf).copy()
 
 
+def to_common_sr(data, sr):
+    """録音機ごとのサンプルレート（256〜500kHz）の違いで、ピッチシフト後のパルスの高さが
+    変わらないよう 384kHz に揃える（揃えないと同じ50kHzのパルスが4.4〜8.6kHzとばらつく）"""
+    if sr == COMMON_SR or sr < MIN_SR:
+        return data
+    g = math.gcd(COMMON_SR, int(sr))
+    return resample_poly(data, COMMON_SR // g, int(sr) // g).astype(np.float32)
+
+
 def pitch_shift_to_tempfile(data, sr_orig):
-    """サンプルレートのラベル付け替えのみで44.1kHz相当に変換（タイム・エクスパンション方式）"""
+    """384kHzに揃えたうえで、サンプルレートのラベル付け替えにより44.1kHz相当に変換（タイム・エクスパンション方式）"""
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    sf.write(tmp.name, data, TARGET_SR)
+    sf.write(tmp.name, to_common_sr(data, sr_orig), TARGET_SR)
     return tmp.name
 
 
@@ -318,15 +333,18 @@ st.set_page_config(page_title="コウモリ音声識別 3方式比較", page_ico
 if COVER_IMAGE.exists():
     st.image(str(COVER_IMAGE), width="stretch")
 
-st.title("🦇 日本産コウモリ音声識別 3方式比較アプリ Ver.5.0")
-st.caption("Ver.3.3（階層分類CNN）／Ver.4.4（Google Perch転移学習）／"
-           "Ver.4.5（BirdNET転移学習）を同一音声で同時実行し、横並びで比較します。"
-           "3方式とも、コウモリ22種に加えて「ノイズ（非コウモリ音）」を判定します。")
+st.title("🦇 日本産コウモリ音声識別 3方式比較アプリ Ver.5.2")
+st.caption("Ver.3.4（階層分類CNN）／Ver.4.6（Google Perch転移学習）／"
+           "Ver.4.7（BirdNET転移学習）を同一音声で同時実行し、横並びで比較します。"
+           "3方式とも、コウモリ22種に加えて「ノイズ（非コウモリ音）」を判定します。"
+           "（2026-11-09 改訂：Ver.4.6/4.7 は録音のサンプルレートを384kHzに揃える前処理に変更。"
+           "Ver.3.4 は版番号を揃えただけで、モデルは Ver.3.3 と同じ）")
 
 st.warning(
     "**このアプリは3方式の比較検証用です。**  \n"
-    "Ver.3.3は場所を考慮しない評価のみで、真の未知地点性能は未検証です。  \n"
-    "Ver.4.4・Ver.4.5は場所ベース評価済み（複数地点18種で精度 Perch 45.5%・BirdNET 41.4%）。  \n"
+    "Ver.3.4は場所を考慮しない評価のみで、真の未知地点性能は未検証です。  \n"
+    "Ver.4.6・Ver.4.7は場所ベース評価済み（複数地点18種で精度 Perch 66.1%・BirdNET 57.9%）。"
+    "ただし種による差が大きく、ヒナコウモリ・テングコウモリは2割前後に留まります。  \n"
     "いずれも研究用の試作であり、確信度が低い場合や3方式で結果が割れる場合は、"
     "専門家による確認を強く推奨します。"
 )
@@ -335,7 +353,7 @@ st.warning(
     "⚠️ **要注意の種**：ドーベントンコウモリ・キタクビワコウモリ・コヤマコウモリ・ヒメヒナコウモリは"
     "学習データが1地点・数件のみで、他地点での信頼性は未検証です。"
     "洞内など反響の多い場所で録った音声は、野外の録音と性質が異なり、正しく判定できないことがあります"
-    "（熊本の洞内飛翔のノレンコウモリは、未知地点として評価すると Perch・BirdNET とも判定できませんでした）。"
+    "（洞内録音の多いノレンコウモリは、未知地点としての評価で Perch 41%・BirdNET 41%に留まります）。"
 )
 
 with st.spinner("3つのモデルを読み込んでいます（初回は数十秒〜1分程度かかります）..."):
@@ -373,6 +391,9 @@ if uploaded is not None:
     col1, col2 = st.columns(2)
     col1.metric("元サンプルレート", f"{sr_orig / 1000:.0f} kHz")
     col2.metric("録音時間", f"{len(data)/sr_orig:.2f} 秒")
+    if sr_orig < MIN_SR:
+        st.warning(f"サンプルレートが {sr_orig / 1000:.0f}kHz と低く、フルスペクトラムの超音波録音でない"
+                   "（時間伸長済みなど）可能性があります。学習データにはこのような録音が無いため、判定は参考程度にしてください。")
     st.divider()
 
     # 3方式が一致しているかの簡易サマリー
@@ -385,22 +406,23 @@ if uploaded is not None:
         st.error("❌ 3方式の第1候補がすべて異なります。専門家による確認を強く推奨します。")
 
     c1, c2, c3 = st.columns(3)
-    render_result_column(c1, "Ver.3.3（階層分類CNN）", results_32,
+    render_result_column(c1, "Ver.3.4（階層分類CNN）", results_32,
                           acc_multi=ACC["ver33"]["multi"],
                           extra_caption=f"音響グループ判定: {GROUP_LABELS.get(pred_group, pred_group)}"
                                         f"（確信度{group_conf:.1%}）")
-    render_result_column(c2, "Ver.4.4（Perch転移学習）", results_40, acc_multi=ACC["ver44"]["multi"])
-    render_result_column(c3, "Ver.4.5（BirdNET転移学習）", results_41, acc_multi=ACC["ver45"]["multi"])
+    render_result_column(c2, "Ver.4.6（Perch転移学習）", results_40, acc_multi=ACC["ver44"]["multi"])
+    render_result_column(c3, "Ver.4.7（BirdNET転移学習）", results_41, acc_multi=ACC["ver45"]["multi"])
 
     st.divider()
     st.subheader("スペクトログラム（10〜130 kHz、元の超音波録音）")
     st.image(spec_img, width="stretch")
 
     st.info(
-        "**ご注意**：3方式は前提が異なります。Ver.3.3はスペクトログラム画像を直接CNNで分類、"
-        "Ver.4.4/4.5は音声を音響埋め込みモデル（鳥類用に事前学習）に通してから線形分類器で判定します。"
-        "  \nVer.4.4/4.5では、超音波をサンプルレート変換によるピッチシフト"
-        "（タイム・エクスパンションと同義）で可聴域相当に変換してから入力しています。"
-        "  \n学習データ（2026-10-16 更新）: 日本産22種のコウモリ（Ver.3.3は3,101録音、Ver.4.4/4.5は2,674録音）"
+        "**ご注意**：3方式は前提が異なります。Ver.3.4はスペクトログラム画像を直接CNNで分類、"
+        "Ver.4.6/4.7は音声を音響埋め込みモデル（鳥類用に事前学習）に通してから線形分類器で判定します。"
+        "  \nVer.4.6/4.7では、録音のサンプルレートを384kHzに揃えたうえで、超音波をサンプルレート変換による"
+        "ピッチシフト（タイム・エクスパンションと同義、一律約8.7倍）で可聴域相当に変換してから入力しています。"
+        "  \n学習データ（Ver.3.4は2026-10-16、Ver.4.6/4.7は2026-11-09 改訂）: 日本産22種のコウモリ"
+        "（Ver.3.4は3,101録音、Ver.4.6/4.7は2,647録音）"
         "と、ノイズ（虫・雑音・川・バス・車の音61録音と無音区間、計366サンプル）"
     )
